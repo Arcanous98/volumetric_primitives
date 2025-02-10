@@ -9,7 +9,7 @@ setup(
     name="volprim",
     version="1.0",
     author="Sébastien Speierer",
-    packages='volprim',
+    packages=["volprim"],
     description="A Mitsuba extension library for ray tracing volumetric primitives",
     python_requires=">=3.8",
     install_requires=[
