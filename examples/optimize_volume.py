@@ -34,16 +34,16 @@ parser.add_argument('--cam_count',      type=int, default=8,      help='Number o
 parser.add_argument('--cam_res',        type=int, default=256,    help='Camera resolution')
 
 # Integrator parameters
-parser.add_argument('--ref_spp',   type=int, default=32,         help='Number of samples per pixel used for rendering the reference images')
+parser.add_argument('--ref_spp',   type=int, default=128,         help='Number of samples per pixel used for rendering the reference images')
 parser.add_argument('--opt_spp',   type=int, default=1,          help='Number of samples per pixel used for rendering during the optimization')
 parser.add_argument('--grad_spp',  type=int, default=1,          help='Number of samples per pixel used for gradient computation during the optimization')
 parser.add_argument('--max_depth', type=int, default=-1,         help='Maximum path depth for integrator')
 parser.add_argument('--kernel',    type=str, default='gaussian', help='Kernel type')
 
 # Optimization parameters
-parser.add_argument('--iterations',        type=int,   default=64,      help='Number of iterations for the gradient descent optimization')
+parser.add_argument('--iterations',        type=int,   default=512,      help='Number of iterations for the gradient descent optimization')
 parser.add_argument('--volprim_count',     type=int,   default=16,      help='Resolution of the 3D grid of volumetric primitives')
-parser.add_argument('--init_albedo',       type=float, default=0.9,     help='Initial value for the volumetric primitive albedo')
+parser.add_argument('--init_albedo',       type=float, default=0.0,     help='Initial value for the volumetric primitive albedo')
 parser.add_argument('--init_sigmat',       type=float, default=0.0001,  help='Initial value for the volumetric primitive sigmat')
 parser.add_argument('--no_prune',          action="store_true",         help='Whether insignificant volumetric primitives should be pruned after the optimization')
 parser.add_argument('--write_image_every', type=int,   default=4,       help='Frequency as which images and stats are computed')
