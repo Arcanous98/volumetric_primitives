@@ -85,7 +85,7 @@ class VolumetricPrimitiveRadianceFieldIntegrator(RBIntegrator):
         '''
         def eval(shape, si, ray, active):
             if shape is not None and shape.shape_type() == +mi.ShapeType.Ellipsoids:
-                sh_coeffs = shape.eval_attribute_X("sh_coeffs", si, active)
+                sh_coeffs = shape.eval_attribute_x("sh_coeffs", si, active)
                 sh_degree = int(dr.sqrt((sh_coeffs.shape[0] // 3) - 1))
                 sh_dir_coef = dr.sh_eval(ray.d, sh_degree)
                 emission = mi.Color3f(0.0)

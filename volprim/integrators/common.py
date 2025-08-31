@@ -79,7 +79,7 @@ class Ellipsoid:
             if self is not None and self.shape_type() == +mi.ShapeType.Ellipsoids:
                 si = dr.zeros(mi.SurfaceInteraction3f)
                 si.prim_index = prim_index
-                data = self.eval_attribute_X("ellipsoid", si, active)
+                data = self.eval_attribute_x("ellipsoid", si, active)
                 center = mi.Point3f([data[i] for i in range(3)])
                 scale  = mi.Vector3f([data[i + 3] for i in range(3)])
                 quat   = mi.Quaternion4f([data[i + 6] for i in range(4)])
