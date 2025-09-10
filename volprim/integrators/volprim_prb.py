@@ -543,8 +543,8 @@ class VolumetricPrimitivesPRBIntegrator(RBIntegrator):
         success = active & (chi_i < sample) & ~primitives.is_empty()
 
         if self.solver_type == 'disabled':
-            # Sample middle of the segment (biased(?))
-            t_s = (seg_t0 + seg_t1) / 2.0
+            # Sample uniformly within the segment (slightly biased but much faster)
+            t_s = seg_t0 + sample * (seg_t1 - seg_t0)
         else:
             t_s = self.primitives_sample_interaction_segment(scene, ray, primitives, seg_t0, seg_t1, sample, β, success)
 
@@ -563,21 +563,20 @@ class VolumetricPrimitivesPRBIntegrator(RBIntegrator):
         '''
         active = mi.Bool(active) & ~primitives.is_empty()
 
-        if False: # TODO handle case where we have a single primitive
-            # Handle the case where we have a single primitive
-            single_case = active & (primitives.size() == 1)
-            prim_id = primitives.value(0, single_case)
-            ellipsoid = Ellipsoid.gather(prim_id.shape, prim_id.index, active1)
-            si1 = dr.zeros(mi.SurfaceInteraction3f)
-            si1.prim_index = prim_id.index
-            sigma_t = prim_id.shape.eval_attribute_1('sigma_t', si1, active1)
-            t_s = self.kernel.inv_cdf(ray, ellipsoid, sigmat, sample / β, single_case)
-            success = single_case & (t_s > seg_t0) & (t_s < seg_t1)
-            active &= ~success
-
         # Initial guess for the Newton solver
         t_s = (seg_t0 + seg_t1) / 2.0
         chi = -dr.log(sample / β)
+        if self.kernel_type_ == "gaussian":
+            # Handle the case where we have a single primitive
+            single_case = active & (primitives.size() == 1)
+            prim_id = primitives.value(mi.UInt32(0), single_case)
+            ellipsoid = Ellipsoid.gather(prim_id.shape, prim_id.index, single_case)
+            si1 = dr.zeros(mi.SurfaceInteraction3f)
+            si1.prim_index = prim_id.index
+            sigma_t = prim_id.shape.eval_attribute_1('sigma_t', si1, single_case)
+            t_s = self.kernel.inv_cdf(ray, ellipsoid, sigma_t, chi, single_case)
+            success = single_case #& (t_s > seg_t0) & (t_s < seg_t1)
+            active &= ~success
 
         # ----------------------------------------------------------------------
         # Fetching the primitive attributes
@@ -610,7 +609,6 @@ class VolumetricPrimitivesPRBIntegrator(RBIntegrator):
         while active:
             cdf = mi.Float(0.0)
             pdf = mi.Float(0.0)
-            tau = mi.Float(0.0)
 
             it2  = mi.UInt32(0)
             active2 = mi.Bool(active)
@@ -619,13 +617,10 @@ class VolumetricPrimitivesPRBIntegrator(RBIntegrator):
                 sigmat    = sigmats.value(it2, active2)
 
                 # Compute integral value
-                density = self.kernel.density_integral(ray, ellipsoid, seg_t0, t_s, active2)
-                tau += density * sigmat
-                cdf += density * sigmat
+                cdf += self.kernel.density_integral(ray, ellipsoid, seg_t0, t_s, active2) * sigmat 
 
                 if self.solver_type == 'newton':
-                    density_pdf = self.kernel.pdf(ray(t_s), ellipsoid, active2)
-                    pdf += density_pdf * sigmat
+                    pdf += self.kernel.pdf(ray(t_s), ellipsoid, active2) * sigmat
 
                 it2 += 1
                 active2 &= (it2 < ellipsoids.size())
@@ -638,7 +633,7 @@ class VolumetricPrimitivesPRBIntegrator(RBIntegrator):
             else:
                 # Bisection algorithm
                 step = (seg_t1 - seg_t0) / dr.power(2.0, it + 2)
-                t_s[active] = dr.select(tau > chi, t_s - step, t_s + step)
+                t_s[active] = dr.select(cdf > chi, t_s - step, t_s + step)
 
             # Avoid NaNs and accelerate solver by clipping steps outside of segment
             diverge = active & ((t_s < seg_t0) | (t_s > seg_t1))

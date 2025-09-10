@@ -156,7 +156,8 @@ class GaussianKernel(Kernel):
              active: mi.Bool) -> mi.Float:
         p = ellipsoid.rot.T * (p - ellipsoid.center)
         s = ellipsoid.scale
-        return dr.exp(-0.5 * (p.x**2 / s.x**2 + p.y**2 / s.y**2 + p.z**2 / s.z**2))
+        p = p / s
+        return dr.exp(-0.5 * dr.sum(p * p))
 
     def pdf(self,
             p: mi.Point3f,
@@ -164,11 +165,11 @@ class GaussianKernel(Kernel):
             active: mi.Bool) -> mi.Float:
         p = ellipsoid.rot.T * (p - ellipsoid.center)
         s = ellipsoid.scale
+        p = p / s
 
-        denom = dr.power(2.0 * dr.pi, 3.0 / 2.0) * s.x * s.y * s.z
-        density = dr.exp(-0.5 * (p.x**2 / s.x**2 + p.y**2 / s.y**2 + p.z**2 / s.z**2)) * dr.rcp(denom)
-
-        return dr.select(active, density, 0.0)
+        denom = dr.sqrt(8.0 * dr.pi * dr.pi * dr.pi) * dr.prod(s)
+        pdf = dr.exp(-0.5 * dr.sum(p * p)) / denom
+        return dr.select(active, pdf, 0.0)
 
     def inv_cdf(self,
                 ray: mi.Ray3f,
@@ -176,18 +177,21 @@ class GaussianKernel(Kernel):
                 sigmat: mi.Float,
                 chi: mi.Float,
                 active: mi.Bool) -> mi.Float:
-        w = ellipsoid.rot.T * ray.d
-        p = ellipsoid.rot.T * (ray.o - ellipsoid.center)
         s = ellipsoid.scale
+        w = ellipsoid.rot.T * ray.d / s
+        p = ellipsoid.rot.T * (ray.o - ellipsoid.center) / s
+        w_norm = dr.norm(w)
+        w /= w_norm
 
-        # Integrates the full dominion of the ray, -inf,inf
-        C1 = s.x**2 * s.y**2 * w.z**2 + s.x**2 * s.z**2 * w.y**2 + s.y**2 * s.z**2 * w.x**2
-        exponent = dr.exp(-((p.x**2 * s.y**2 + p.y**2 * s.x**2) * w.z**2 - 2.0 * p.z * w.z * (p.y * s.x**2 * w.y + p.x * s.y**2 * w.x) + w.y**2 * (p.x**2 * s.z**2 + p.z**2 * s.x**2) - 2.0 * p.x * p.y * s.z**2 * w.x * w.y + w.x**2 * (p.y**2 * s.z**2 + p.z**2 * s.y**2)) / (2.0*C1))
+        B = dr.dot(w, p)
+        C = dr.dot(p, p)
 
-        denom = 4.0 * dr.pi * dr.sqrt(C1)
-        C = -((denom * dr.log(chi) * dr.rcp(sigmat))) * dr.rcp(exponent) - 1.0
-        t_s = (dr.sqrt(2.0) * dr.erfinv(C) * (s.x * s.y * s.z * dr.sqrt(C1)) - p.z * s.x**2 * s.y**2 * w.z - p.y * s.x**2 * s.z**2 * w.y - p.x * s.y**2 * s.z**2 * w.x) * dr.rcp(C1)
-
+        K = sigmat * dr.rcp(w_norm) * dr.exp(-0.5 * (C - B * B)) * dr.rcp(2.0 * dr.pi) * dr.sqrt(dr.prod(s))
+        erfinv_arg = dr.erf(B / dr.sqrt(2.0)) + 2.0 * chi / K
+        t_s = dr.sqrt(2.0) * dr.erfinv(erfinv_arg) - B
+        t_s = dr.select(dr.isnan(t_s), dr.inf, t_s)  # Handle NaNs arising from intersection points in the infinite (dr.abs(erfinv_arg)>1)
+        # TODO: would be interesting that erfinv returns -inf or inf instead of nans, could we change this behavior?
+        
         return dr.select(active, t_s, 0.0)
 
     def density_integral(self,
@@ -200,48 +204,41 @@ class GaussianKernel(Kernel):
             w = ellipsoid.rot.T * ray.d
             p = ellipsoid.rot.T * (ray.o - ellipsoid.center)
             s = ellipsoid.scale
+            w /= s
+            w_norm = dr.norm(w)
+            w /= w_norm
+            p /= s
 
-            exponent = ((p.x**2 * s.y**2 + p.y**2 * s.x**2) * w.z**2 - 2.0 * p.z * w.z * (p.y * s.x**2 * w.y + p.x * s.y**2 * w.x) + w.y**2 * (p.x**2 * s.z**2 + p.z**2 * s.x**2) - 2.0 * p.x * p.y * s.z**2 * w.x * w.y + w.x**2 * (p.y**2 * s.z**2 + p.z**2 * s.y**2)) / (2.0 * (s.x**2 * s.y**2 * w.z**2 + s.x**2 * s.z**2 * w.y**2 + s.y**2 * s.z**2 * w.x**2))
-            denom = 2.0 * dr.pi * dr.sqrt(s.x**2 * s.y**2 * w.z**2 + s.x**2 * s.z**2 * w.y**2 + s.y**2 * s.z**2 * w.x**2)
-            density = dr.exp(-exponent) / denom
+            B = dr.dot(w, p)
+            C = dr.dot(p, p)
+            density = dr.sqrt(2.0 * dr.pi) * dr.rcp(w_norm) * dr.exp(-0.5 * (C - B * B))
         else:
             active = mi.Bool(active) & (tmin < tmax) & (tmax > 0.0) # Catching rare edge-cases and avoiding (NaNs)
-            p  = ellipsoid.rot.T * (ray(tmin) - ellipsoid.center)
-            p1 = ellipsoid.rot.T * (ray(tmax) - ellipsoid.center)
-            s  = ellipsoid.scale
+            s = ellipsoid.scale
+            w = ellipsoid.rot.T * ray.d / s
+            p = ellipsoid.rot.T * (ray.o - ellipsoid.center) / s
+            w_norm = dr.norm(w)
+            w /= w_norm
+            t_sim = 0.5 * (tmax - tmin)
+            t_sim *= w_norm
+            p = p + t_sim * w
 
-            # Integrates between the intersection points p0 and p1
-            w = p1 - p
-            tmax = dr.norm(w)
-            w = w / tmax
-
-            C1 = s.x**2 * s.y**2 * w.z**2 + s.x**2 * s.z**2 * w.y**2 + s.y**2 * s.z**2 * w.x**2
-            C2 = p.z * s.x**2 * s.y**2 * w.z + p.y * s.x**2 * s.z**2 * w.y + p.x * s.y**2 * s.z**2 * w.x
-            exponent = (p.x**2 * s.y**2 * w.z**2 + p.y**2 * s.x**2 * w.z**2 - 2 * p.y * p.z * s.x**2 * w.y * w.z - 2 * p.x * p.z * s.y**2 * w.x * w.z + p.x**2 * s.z**2 * w.y**2 + p.z**2 * s.x**2 * w.y**2 - 2 * p.x * p.y * s.z**2 * w.x * w.y + p.y**2 * s.z**2 * w.x**2 + p.z**2 * s.y**2 * w.x**2)
-            exponent /= (2.0 * C1)
-
-            denom = 4.0 * dr.pi * dr.sqrt(C1)
-
-            density = dr.exp(-exponent) * dr.rcp(denom)
-
-            erf_denom = s.x * s.y * s.z * dr.sqrt(2.0 * C1)
-            erf1 = dr.erf(C2 / erf_denom)
-            erf2 = dr.erf((tmax * C1 + C2) / erf_denom)
-            density *= (erf2 - erf1)
-
+            B = dr.dot(w, p)
+            C = dr.dot(p, p)
+            erf = dr.erf(t_sim * dr.sqrt(0.5))
+            density = dr.rcp(w_norm) * dr.exp(-0.5 * (C - B * B)) * erf * dr.sqrt(2.0 * dr.pi)
+        
         if self.normalized:
-            density /= self.normalization_factor(ellipsoid)
+            density *= self.normalization_factor(s)
 
         density = dr.maximum(density, 0.0)
         density[~active] = 0.0
         density[~dr.isfinite(density)] = 0.0
 
-        return density
+        return density                                      
 
-    def normalization_factor(self, ellipsoid: Ellipsoid) -> mi.Float:
-        s = ellipsoid.scale
-        return dr.rcp(0.5 * 4.0 * dr.pi * dr.sqrt((s.x**2 * s.y**2 + s.x**2 * s.z**2 + s.y**2 * s.z**2) / 3.0))
-
+    def normalization_factor(self, s: mi.Vector3f) -> mi.Float:
+        return dr.rcp(dr.sqrt(8.0 * (dr.pi * dr.pi * dr.pi)) * dr.prod(s))
 #-------------------------------------------------------------------------------
 
 class EpanechnikovKernel(Kernel):
@@ -252,29 +249,27 @@ class EpanechnikovKernel(Kernel):
              p: mi.Point3f,
              ellipsoid: Ellipsoid,
              active: mi.Bool) -> mi.Float:
-        s = ellipsoid.scale * 3.0
+        
+        s = ellipsoid.scale
         p = ellipsoid.rot.T * (p - ellipsoid.center) / s
+
         dist = dr.norm(p)
-        value = (3.0 / 4.0) * (1.0 - dist**2)
+        value = (1.0 - (1.0/7.0) * dist**2)
         return dr.maximum(value, 0.0)
 
     def pdf(self,
             p: mi.Point3f,
             ellipsoid: Ellipsoid,
             active: mi.Bool) -> mi.Float:
-        raise Exception('EpanechnikovKernel.pdf(): Not implemented!')
-
-        p = (ellipsoid.rot.T * (p - ellipsoid.center))
+        
         s = ellipsoid.scale
+        p = ellipsoid.rot.T * (p - ellipsoid.center) / s
 
-        if False:
-            dist = dr.norm(p)
-            density = (3.0 / 4.0) * (1.0 - dist**2)
-        else:
-            density = (1 - (p.x**2 / s.x**2 - p.y**2 / s.y**2 - p.z**2 / s.z**2)) * 15 / (8 * dr.pi * s.x * s.y * s.z)
+        dist = dr.norm(p)
+        K_norm = self.normalization_factor(ellipsoid)
+        density = K_norm * (1.0 - (1.0/7.0) * (dist ** 2)) 
 
-        density = dr.clip(density, 0.0, 1.0)
-        return dr.select(active, density, 0.0)
+        return dr.select(active, dr.clip(density, 0.0, 1.0), 0.0)
 
     def inv_cdf(self,
                 ray: mi.Ray3f,
@@ -290,48 +285,37 @@ class EpanechnikovKernel(Kernel):
                          tmin: mi.Float,
                          tmax: mi.Float,
                          active: mi.Bool) -> mi.Float:
+        w = ellipsoid.rot.T * ray.d
+        p = ellipsoid.rot.T * (ray.o - ellipsoid.center)
+        s = ellipsoid.scale
+        w /= s
+        w_norm = dr.norm(w)
+        w /= w_norm
+        p /= s
+        
         if self.full_range or (tmin is None and tmax is None):
             valid, tmin, tmax = ray_ellipsoid_intersection(ray, ellipsoid, active)
             active = mi.Bool(active) & valid
 
         active = mi.Bool(active) & (tmin < tmax) & (tmax > 0.0) # Catching rare edge cases and avoiding (NaNs)
 
-        p  = ellipsoid.rot.T * (ray(tmin) - ellipsoid.center)
-        p1 = ellipsoid.rot.T * (ray(tmax) - ellipsoid.center)
-        s  = ellipsoid.scale
-
-        w = p1 - p
-        t = dr.norm(w)
-        w = w / t
-
-        density = -(
-            s.x**2 * s.y**2 * t**3 * w.z**2 + \
-            3 * p.z * s.x**2 * s.y**2 * t**2 * w.z + \
-            s.x**2 * s.z**2 * t**3 * w.y**2 + \
-            3 * p.y * s.x**2 * s.z**2 * t**2 * w.y + \
-            s.y**2 * s.z**2 * t**3 * w.x**2 + \
-            3 * p.x * s.y**2 * s.z**2 * t**2 * w.x + \
-            (((3 * p.x**2 - 3 * s.x**2) * s.y**2 + 3 * p.y**2 * s.x**2) * s.z**2 + 3 * p.z**2 * s.x**2 * s.y**2) * t
-        ) * 5.0 / (8.0 * dr.pi * s.x**3 * s.y**3 * s.z**3)
+        C1 = 3.0 * (((p.x ** 2 - 7.0) + p.y ** 2) + p.z ** 2)
+        C2 = 3.0 * dr.sum(p * w)
+        density = dr.rcp(w_norm) * ((tmin**3 + C2 * tmin**2 + C1 * tmin) - (tmax**3 + C2 * tmax**2 + C1 * tmax))
 
         if self.normalized:
-            density /= self.normalization_factor(ellipsoid)
+            density *= self.normalization_factor(ellipsoid)
 
-        density = dr.maximum(density, 0.0)
         density[~active] = 0.0
+        density = dr.maximum(density, 0.0)
         density[~dr.isfinite(density)] = 0.0
 
         return density
-
+    
     def normalization_factor(self, ellipsoid: Ellipsoid) -> mi.Float:
         # Analytical formula for isotropic Epanechnikov maximum density integral value
-        # return 5.0 / (2.0 * dr.pi * dr.mean(ellipsoid.scale)**2)
-
-        # Formula similar to Gaussian kernel, with different constant (e.i. 5.0 / 2.0)
-        # Prefer this in order to match Gaussian magnitude in anisotropic case
         s = ellipsoid.scale
-        return 5.0 / (2.0 * dr.pi * dr.sqrt((s.x**2 * s.y**2 + s.x**2 * s.z**2 + s.y**2 * s.z**2) / 3.0))
-
+        return 15/(84 * dr.pi * dr.prod(s))
 #-------------------------------------------------------------------------------
 
 def safe_rcp(x):
